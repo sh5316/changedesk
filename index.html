@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>자리 바꾸기</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23203a31'/%3E%3Cg fill='none' stroke='%23dfe9e3' stroke-width='1.8'%3E%3Crect x='5' y='5' width='14' height='3' rx='1'/%3E%3Crect x='5' y='11' width='5.5' height='3' rx='1'/%3E%3Crect x='13.5' y='11' width='5.5' height='3' rx='1'/%3E%3Crect x='5' y='16.5' width='5.5' height='2.5' rx='1'/%3E%3Crect x='13.5' y='16.5' width='5.5' height='2.5' rx='1'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <style>
   :root {
@@ -357,6 +358,18 @@
     .seat { background: #f4f4f4; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     .board { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   }
+
+  /* ---------- 정적 버전 추가 ---------- */
+  .btn.sm { height: 32px; padding: 0 10px; font-size: 13px; border-radius: 8px; gap: 5px; }
+  .head-actions { display: flex; gap: 2px; flex-wrap: wrap; justify-content: flex-end; }
+  .btn.ghost.neutral:hover:not(:disabled) { color: var(--ink); }
+  .tools { display: flex; gap: 6px; margin-top: 8px; }
+  .tools .btn { flex: 1; }
+  .roster-empty { text-align: center; padding: 26px 8px 18px; color: var(--muted); font-size: 13.5px; }
+  .roster-empty strong { display: block; color: var(--ink); font-size: 15px; margin-bottom: 2px; }
+  .footnote { max-width: 1240px; margin: -40px auto 0; padding: 0 24px 40px; color: var(--muted); font-size: 12.5px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  @media print { .footnote { display: none; } }
 </style>
 </head>
 <body>
@@ -390,13 +403,18 @@
       <div class="card-body">
         <div class="roster" id="roster"></div>
         <button class="add-row" id="addBtn"></button>
+        <div class="tools">
+          <button class="btn sm" id="csvBtn"></button>
+          <button class="btn sm" id="sampleBtn">예시 명단</button>
+        </div>
+        <input type="file" id="csvFile" accept=".csv,text/csv" class="sr-only" tabindex="-1" aria-hidden="true">
 
         <div class="divider"></div>
 
         <div class="field">
           <span class="field-label">성별 배치</span>
           <div class="seg">
-            <label><input type="radio" name="gender" value="mixed">남녀 짝</label>
+            <label><input type="radio" name="gender" value="mixed" checked>남녀 짝</label>
             <label><input type="radio" name="gender" value="same">같은 성별</label>
             <label><input type="radio" name="gender" value="none">고려 안 함</label>
           </div>
@@ -437,17 +455,255 @@
     <section class="card" id="historyCard">
       <div class="card-head">
         <h2>지난 기록</h2>
-        <button class="btn ghost" id="resetBtn"></button>
+        <div class="head-actions">
+          <button class="btn ghost neutral sm" id="backupBtn"></button>
+          <button class="btn ghost neutral sm" id="restoreBtn"></button>
+          <button class="btn ghost sm" id="resetBtn"></button>
+        </div>
       </div>
       <div class="card-body" id="history"></div>
+      <input type="file" id="restoreFile" accept=".json,application/json" class="sr-only" tabindex="-1" aria-hidden="true">
     </section>
   </main>
 </div>
 
+<p class="footnote">명단과 기록은 이 브라우저에만 저장되고 어디에도 전송되지 않아요. 다른 컴퓨터나 브라우저로 옮길 때는 <b>백업</b>과 <b>복원</b>을 이용하세요.</p>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
-const state = { students: [], history: [], max: 20, desks: null, report: null, confirmed: false };
+/* ============================================================
+   배치 알고리즘
+   ============================================================ */
+const MAX_STUDENTS = 20;
+const PAST_PAIR_PENALTY = 1000;  // 예전 짝과 다시 짝이 되는 경우 (1회당)
+const SOLO_REPEAT_PENALTY = 500; // 혼자 앉았던 학생이 또 혼자 앉는 경우
+const GENDER_PENALTY = 300;      // 성별 배치 방식에 맞지 않는 짝
+const GRADE_WEIGHT = 1;          // 짝의 성적 합이 평균에서 벗어난 정도
+const SEARCH_TRIES = 300;        // 랜덤 시작 횟수
+
+const GENDER_RULES = { mixed: "남녀 짝", same: "같은 성별 짝" };
+const GENDER_ALIASES = { "남": "남", "남자": "남", "m": "남", "male": "남",
+                         "여": "여", "여자": "여", "f": "여", "female": "여" };
+
+class StudentError extends Error {}
+
+/** [{name, gender, score}] → Map(이름 → {score, gender}) */
+function parseStudents(rows, checkCount = true) {
+  const students = new Map();
+  for (const row of rows) {
+    const name = String(row.name ?? "").trim();
+    if (!name) continue;
+    if (students.has(name)) throw new StudentError(`이름이 중복되었습니다: ${name}`);
+
+    const rawGender = String(row.gender ?? "").trim().toLowerCase();
+    if (rawGender && !(rawGender in GENDER_ALIASES)) {
+      throw new StudentError(`${name}의 성별을 알 수 없습니다: ${row.gender} (남/여로 입력해주세요)`);
+    }
+    const rawScore = String(row.score ?? "").trim();
+    const score = Number(rawScore);
+    if (rawScore === "" || !Number.isFinite(score)) {
+      throw new StudentError(`${name}의 성적이 숫자가 아닙니다: ${rawScore || "(빈칸)"}`);
+    }
+    students.set(name, { score, gender: GENDER_ALIASES[rawGender] ?? null });
+  }
+  if (checkCount) {
+    if (students.size < 2) throw new StudentError("학생이 2명 이상이어야 합니다.");
+    if (students.size > MAX_STUDENTS) {
+      throw new StudentError(`학생은 최대 ${MAX_STUDENTS}명까지 가능합니다. (현재 ${students.size}명)`);
+    }
+  }
+  return students;
+}
+
+const pairKey = (a, b) => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`);
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function isGenderMismatch(g1, g2, mode) {
+  if (!mode || !g1 || !g2) return false;
+  return mode === "mixed" ? g1 === g2 : g1 !== g2;
+}
+
+class Arranger {
+  constructor(students, history, genderMode) {
+    this.students = students;
+    this.mode = genderMode === "none" ? null : genderMode;
+    this.pairCount = new Map();
+    this.soloCount = new Map();
+    for (const rec of history) {
+      for (const [a, b] of rec.pairs) {
+        const k = pairKey(a, b);
+        this.pairCount.set(k, (this.pairCount.get(k) || 0) + 1);
+      }
+      if (rec.solo) this.soloCount.set(rec.solo, (this.soloCount.get(rec.solo) || 0) + 1);
+    }
+    this.lastDesk = history.length ? history[history.length - 1].seats || {} : {};
+    const scores = [...students.values()].map((s) => s.score);
+    this.targetSum = (2 * scores.reduce((a, b) => a + b, 0)) / scores.length;
+  }
+
+  genderMismatch(a, b) {
+    return isGenderMismatch(this.students.get(a).gender, this.students.get(b).gender, this.mode);
+  }
+
+  pairCost(a, b) {
+    let cost = PAST_PAIR_PENALTY * (this.pairCount.get(pairKey(a, b)) || 0);
+    if (this.genderMismatch(a, b)) cost += GENDER_PENALTY;
+    cost += GRADE_WEIGHT * Math.abs(this.students.get(a).score + this.students.get(b).score - this.targetSum);
+    return cost;
+  }
+
+  /** order를 앞에서부터 두 명씩 짝지음. 홀수면 마지막 한 명은 혼자. */
+  totalCost(order) {
+    let cost = 0;
+    for (let i = 0; i + 1 < order.length; i += 2) cost += this.pairCost(order[i], order[i + 1]);
+    if (order.length % 2 === 1) cost += SOLO_REPEAT_PENALTY * (this.soloCount.get(order[order.length - 1]) || 0);
+    return cost;
+  }
+
+  /** 두 학생의 자리를 맞바꿔 비용이 줄면 반영하는 과정을 더 이상 개선이 없을 때까지 반복. */
+  improve(order) {
+    let best = this.totalCost(order);
+    let improved = true;
+    while (improved) {
+      improved = false;
+      for (let i = 0; i < order.length; i++) {
+        for (let j = i + 1; j < order.length; j++) {
+          if ((i >> 1) === (j >> 1)) continue; // 같은 짝끼리 바꾸는 건 의미 없음
+          [order[i], order[j]] = [order[j], order[i]];
+          const cost = this.totalCost(order);
+          if (cost < best - 1e-9) { best = cost; improved = true; }
+          else [order[i], order[j]] = [order[j], order[i]];
+        }
+      }
+    }
+    return best;
+  }
+
+  deskConflicts(group, desk) {
+    return group.filter((name) => this.lastDesk[name] === desk).length;
+  }
+
+  /** 연속으로 같은 책상에 앉는 학생 수가 maxConflicts 이하인 책상 배정을 무작위로 찾는다. */
+  assignDesks(groups, maxConflicts) {
+    const deskNumbers = shuffle(groups.map((_, i) => i + 1));
+    const assignment = new Map();
+    const used = new Set();
+    const backtrack = (idx, conflicts) => {
+      if (idx === groups.length) return true;
+      for (const desk of deskNumbers) {
+        if (used.has(desk)) continue;
+        const c = conflicts + this.deskConflicts(groups[idx], desk);
+        if (c > maxConflicts) continue;
+        used.add(desk); assignment.set(desk, groups[idx]);
+        if (backtrack(idx + 1, c)) return true;
+        used.delete(desk); assignment.delete(desk);
+      }
+      return false;
+    };
+    if (!backtrack(0, 0)) return null;
+    return groups.map((_, i) => assignment.get(i + 1));
+  }
+
+  /** 비용이 낮은 짝 조합부터, 지난번과 같은 책상에 앉는 학생이 없게 배정되는지 확인한다. */
+  arrange(tries = SEARCH_TRIES) {
+    const names = [...this.students.keys()];
+    const candidates = new Map();
+    for (let t = 0; t < tries; t++) {
+      const order = shuffle(names.slice());
+      const cost = this.improve(order);
+      const groups = [];
+      for (let i = 0; i < order.length; i += 2) groups.push(order.slice(i, i + 2));
+      const key = groups.map((g) => g.slice().sort().join("\u0000")).sort().join("\u0001");
+      if (!candidates.has(key)) candidates.set(key, { cost, groups });
+    }
+    const ranked = [...candidates.values()].sort((a, b) => a.cost - b.cost).map((c) => c.groups);
+
+    for (let maxConflicts = 0; maxConflicts <= names.length; maxConflicts++) {
+      for (const groups of ranked) {
+        const sided = groups.map((g) => shuffle(g.slice())); // 책상 안 왼쪽/오른쪽은 무작위
+        const desks = this.assignDesks(sided, maxConflicts);
+        if (desks) return desks;
+      }
+    }
+  }
+
+  report(desks) {
+    const pairs = desks.filter((g) => g.length === 2);
+    const sums = pairs.map(([a, b]) => this.students.get(a).score + this.students.get(b).score);
+    return {
+      repeats: pairs.filter(([a, b]) => this.pairCount.get(pairKey(a, b)))
+        .map(([a, b]) => ({ pair: [a, b], count: this.pairCount.get(pairKey(a, b)) })),
+      same_desk: desks.flatMap((g, i) => g.filter((n) => this.lastDesk[n] === i + 1)),
+      has_last_desk: Object.keys(this.lastDesk).length > 0,
+      gender_rule: this.mode ? GENDER_RULES[this.mode] : null,
+      gender_mismatches: pairs.filter(([a, b]) => this.genderMismatch(a, b)),
+      has_gender: [...this.students.values()].some((s) => s.gender),
+      score_min: Math.min(...sums),
+      score_max: Math.max(...sums),
+    };
+  }
+}
+
+function makeRecord(desks) {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  const seats = {};
+  desks.forEach((g, i) => g.forEach((n) => (seats[n] = i + 1)));
+  return {
+    date: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`,
+    pairs: desks.filter((g) => g.length === 2),
+    solo: desks.find((g) => g.length === 1)?.[0] ?? null,
+    seats,
+  };
+}
+
+/* ============================================================
+   저장 (이 브라우저의 localStorage)
+   ============================================================ */
+const STORE_KEY = "changedesk:v1";
+let storageWarned = false;
+
+function loadStore() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStore() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify({
+      students: state.students, history: state.history, genderMode: genderMode(),
+    }));
+  } catch {
+    if (!storageWarned) {
+      storageWarned = true;
+      toast("이 브라우저에서는 저장이 안 돼요. 창을 닫기 전에 백업을 받아주세요.", true);
+    }
+  }
+}
+
+const SAMPLE = [
+  ["김민준", "남", 92], ["이서연", "여", 88], ["박도윤", "남", 75], ["최지우", "여", 64],
+  ["정하준", "남", 81], ["강서윤", "여", 95], ["조시우", "남", 58], ["윤하은", "여", 70],
+  ["장예준", "남", 83], ["임지민", "여", 67], ["한주원", "남", 90], ["오수아", "여", 72],
+  ["서지호", "남", 61], ["신채원", "여", 86], ["권유준", "남", 55], ["황다은", "여", 78],
+].map(([name, gender, score]) => ({ name, gender, score }));
+
+/* ============================================================
+   화면
+   ============================================================ */
+const state = { students: [], history: [], desks: null, report: null, confirmed: false };
 const $ = (id) => document.getElementById(id);
 const GCLASS = { "남": "m", "여": "f" };
 
@@ -461,6 +717,8 @@ const ICONS = {
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
   alert: '<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
   chev: '<path d="m6 9 6 6 6-6"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>',
 };
 function icon(name, size = 16) {
   const span = document.createElement("span");
@@ -488,17 +746,6 @@ function toast(msg, isError = false) {
   toastTimer = setTimeout(() => (t.className = "toast" + (isError ? " error" : "")), isError ? 4200 : 2400);
 }
 
-async function api(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "서버 오류가 발생했습니다.");
-  return data;
-}
-
 const fmt = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 const initial = (name) => (name || "").trim().charAt(0) || "?";
 const avatar = (s) => el("div", { class: "avatar " + (GCLASS[s.gender] || ""), "aria-hidden": "true" }, initial(s.name));
@@ -521,38 +768,50 @@ function renderSummary() {
 }
 
 /* ---------- 명단 ---------- */
+function rosterChanged() {
+  saveStore();
+  renderSummary();
+}
+
 function renderRoster() {
-  $("roster").replaceChildren(...state.students.map((s, i) => {
-    const av = avatar(s);
-    const genderBtns = ["남", "여"].map((g) =>
-      el("button", {
-        type: "button", class: `${GCLASS[g]}${s.gender === g ? " on" : ""}`, "aria-pressed": String(s.gender === g),
-        title: s.gender === g ? "다시 누르면 선택 해제" : `${g}학생`,
-        onclick: () => { s.gender = s.gender === g ? null : g; renderRoster(); },
-      }, g));
-    return el("div", { class: "row" },
-      av,
-      el("input", { value: s.name, placeholder: "이름", "aria-label": "이름",
-        oninput: (e) => { s.name = e.target.value; av.textContent = initial(s.name); renderSummary(); } }),
-      el("div", { class: "gtoggle", role: "group", "aria-label": "성별" }, genderBtns),
-      el("input", { class: "score", type: "number", min: 0, step: "any", inputmode: "decimal",
-        value: s.score ?? "", placeholder: "점수", "aria-label": "성적",
-        oninput: (e) => { s.score = e.target.value; renderSummary(); } }),
-      el("button", { class: "icon-btn", type: "button", title: "삭제", "aria-label": `${s.name || "학생"} 삭제`,
-        onclick: () => { state.students.splice(i, 1); renderRoster(); } }, icon("x", 15)),
-    );
-  }));
+  const roster = $("roster");
+  if (!state.students.length) {
+    roster.replaceChildren(el("div", { class: "roster-empty" },
+      el("strong", {}, "학생이 없어요"),
+      "학생을 추가하거나 CSV 파일을 불러오세요."));
+  } else {
+    roster.replaceChildren(...state.students.map((s, i) => {
+      const av = avatar(s);
+      const genderBtns = ["남", "여"].map((g) =>
+        el("button", {
+          type: "button", class: `${GCLASS[g]}${s.gender === g ? " on" : ""}`, "aria-pressed": String(s.gender === g),
+          title: s.gender === g ? "다시 누르면 선택 해제" : `${g}학생`,
+          onclick: () => { s.gender = s.gender === g ? null : g; renderRoster(); saveStore(); },
+        }, g));
+      return el("div", { class: "row" },
+        av,
+        el("input", { value: s.name, placeholder: "이름", "aria-label": "이름",
+          oninput: (e) => { s.name = e.target.value; av.textContent = initial(s.name); rosterChanged(); } }),
+        el("div", { class: "gtoggle", role: "group", "aria-label": "성별" }, genderBtns),
+        el("input", { class: "score", type: "number", min: 0, step: "any", inputmode: "decimal",
+          value: s.score ?? "", placeholder: "점수", "aria-label": "성적",
+          oninput: (e) => { s.score = e.target.value; rosterChanged(); } }),
+        el("button", { class: "icon-btn", type: "button", title: "삭제", "aria-label": `${s.name || "학생"} 삭제`,
+          onclick: () => { state.students.splice(i, 1); renderRoster(); saveStore(); } }, icon("x", 15)),
+      );
+    }));
+  }
   const n = state.students.length;
-  $("count").textContent = `${n} / ${state.max}명`;
-  $("progress").style.width = `${Math.min(100, (n / state.max) * 100)}%`;
+  $("count").textContent = `${n} / ${MAX_STUDENTS}명`;
+  $("progress").style.width = `${Math.min(100, (n / MAX_STUDENTS) * 100)}%`;
   const add = $("addBtn");
-  add.disabled = n >= state.max;
-  add.replaceChildren(icon("plus", 15), n >= state.max ? `최대 ${state.max}명까지 가능해요` : "학생 추가");
+  add.disabled = n >= MAX_STUDENTS;
+  add.replaceChildren(icon("plus", 15), n >= MAX_STUDENTS ? `최대 ${MAX_STUDENTS}명까지 가능해요` : "학생 추가");
   renderSummary();
 }
 
 $("addBtn").addEventListener("click", () => {
-  if (state.students.length >= state.max) return;
+  if (state.students.length >= MAX_STUDENTS) return;
   state.students.push({ name: "", gender: null, score: "" });
   renderRoster();
   const rows = $("roster").querySelectorAll(".row");
@@ -560,9 +819,52 @@ $("addBtn").addEventListener("click", () => {
   $("roster").scrollTop = $("roster").scrollHeight;
 });
 
+function replaceRoster(rows, what) {
+  if (state.students.some((s) => s.name.trim()) && !confirm(`지금 명단을 ${what}(으)로 바꿀까요?`)) return false;
+  state.students = rows;
+  renderRoster();
+  saveStore();
+  return true;
+}
+
+$("sampleBtn").addEventListener("click", () => {
+  if (replaceRoster(SAMPLE.map((s) => ({ ...s })), "예시 명단")) toast("예시 명단을 넣었어요.");
+});
+
+/** 이름,성별,성적 헤더가 있는 CSV. 성별 열은 없어도 된다. */
+function parseCsv(text) {
+  const lines = text.replace(/^﻿/, "").split(/\r?\n/).filter((l) => l.trim());
+  if (!lines.length) throw new StudentError("CSV 파일이 비어 있어요.");
+  const cells = (line) => line.split(",").map((c) => c.trim().replace(/^"(.*)"$/, "$1"));
+  const header = cells(lines[0]);
+  const col = (...names) => header.findIndex((h) => names.includes(h.toLowerCase()));
+  const iName = col("이름", "name"), iGender = col("성별", "gender"), iScore = col("성적", "점수", "score");
+  if (iName < 0 || iScore < 0) throw new StudentError("CSV 첫 줄에 '이름'과 '성적' 열이 있어야 해요. (예: 이름,성별,성적)");
+  const rows = lines.slice(1).map(cells).map((c) => ({
+    name: c[iName] ?? "", gender: iGender >= 0 ? c[iGender] : "", score: c[iScore] ?? "",
+  }));
+  const students = parseStudents(rows);  // 형식과 인원 검사
+  return [...students].map(([name, s]) => ({ name, gender: s.gender, score: s.score }));
+}
+
+$("csvBtn").replaceChildren(icon("upload", 14), "CSV 불러오기");
+$("csvBtn").addEventListener("click", () => $("csvFile").click());
+$("csvFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  try {
+    const rows = parseCsv(await file.text());
+    if (replaceRoster(rows, `${file.name}의 명단`)) toast(`${rows.length}명을 불러왔어요.`);
+  } catch (err) {
+    toast(err instanceof StudentError ? err.message : "CSV 파일을 읽지 못했어요.", true);
+  }
+});
+
 /* ---------- 배치 ---------- */
 const genderMode = () => document.querySelector('input[name="gender"]:checked')?.value || "none";
 const columns = () => Number(document.querySelector('input[name="cols"]:checked').value);
+document.querySelectorAll('input[name="gender"]').forEach((r) => r.addEventListener("change", saveStore));
 
 function setArrangeButton(busy) {
   const btn = $("arrangeBtn");
@@ -573,19 +875,21 @@ function setArrangeButton(busy) {
 async function arrange() {
   setArrangeButton(true);
   $("result").classList.add("busy");
+  await new Promise((r) => setTimeout(r, 40)); // 버튼 상태가 먼저 그려지도록
   try {
-    const students = state.students
-      .filter((s) => s.name.trim())
-      .map((s) => ({ name: s.name.trim(), gender: s.gender, score: s.score }));
-    const data = await api("POST", "/api/arrange", { students, gender_mode: genderMode() });
-    state.desks = data.desks;
-    state.report = data.report;
+    const rows = state.students.filter((s) => s.name.trim());
+    const students = parseStudents(rows);
+    const arranger = new Arranger(students, state.history, genderMode());
+    state.desks = arranger.arrange();
+    state.report = arranger.report(state.desks);
     state.confirmed = false;
-    state.students = students.map((s) => ({ ...s, score: Number(s.score) }));
+    state.students = [...students].map(([name, s]) => ({ name, gender: s.gender, score: s.score }));
     renderRoster();
+    saveStore();
     renderResult();
   } catch (e) {
-    toast(e.message, true);
+    if (!(e instanceof StudentError)) console.error(e);
+    toast(e instanceof StudentError ? e.message : "배치 중 오류가 발생했어요.", true);
   } finally {
     setArrangeButton(false);
     $("result").classList.remove("busy");
@@ -604,12 +908,10 @@ function renderResult() {
   const { desks, report } = state;
   if (!desks) return;
   const byName = Object.fromEntries(state.students.map((s) => [s.name, s]));
-  const key = (a, b) => [a, b].sort().join("\u0000");
-  const repeatSet = new Set(report.repeats.map((r) => key(...r.pair)));
-  const mismatchSet = new Set(report.gender_mismatches.map((p) => key(...p)));
+  const repeatSet = new Set(report.repeats.map((r) => pairKey(...r.pair)));
+  const mismatchSet = new Set(report.gender_mismatches.map((p) => pairKey(...p)));
   const sameDesk = new Set(report.same_desk);
 
-  // 요약 카드
   const spread = report.score_max - report.score_min;
   const tiles = el("div", { class: "tiles" },
     tile(report.repeats.length ? "warn" : "ok", "예전 짝 중복", `${report.repeats.length}쌍`,
@@ -626,7 +928,6 @@ function renderResult() {
     tile("ok", "짝꿍 성적 합", `${fmt(report.score_min)}–${fmt(report.score_max)}`, `차이 ${fmt(spread)}점`),
   );
 
-  // 불가피하게 어긴 조건 상세
   const notes = [];
   if (report.repeats.length) notes.push("예전 짝과 다시 짝: " +
     report.repeats.map((r) => `${r.pair[0]} & ${r.pair[1]} (${r.count}회)`).join(", "));
@@ -649,8 +950,8 @@ function renderResult() {
   const grid = el("div", { class: "desks", style: `grid-template-columns: repeat(${columns()}, minmax(0, 1fr))` },
     desks.map((g, i) => {
       const flags = [];
-      if (g.length === 2 && repeatSet.has(key(...g))) flags.push("예전 짝");
-      if (g.length === 2 && mismatchSet.has(key(...g))) flags.push("성별");
+      if (g.length === 2 && repeatSet.has(pairKey(...g))) flags.push("예전 짝");
+      if (g.length === 2 && mismatchSet.has(pairKey(...g))) flags.push("성별");
       return el("div", { class: "desk" + (flags.length ? " flag" : ""), style: `--i:${i}` },
         el("div", { class: "desk-head" },
           el("span", { class: "desk-no" }, `${i + 1}번 책상`),
@@ -678,17 +979,19 @@ function renderResult() {
   status.textContent = state.confirmed ? `${state.history.length}회차로 저장됨` : "확정 전";
 }
 
-async function confirmSeats() {
-  try {
-    const data = await api("POST", "/api/confirm", { desks: state.desks });
-    state.history = data.history;
-    state.confirmed = true;
-    renderResult();
-    renderHistory();
-    toast("저장했어요. 다음에는 이번 짝꿍과 책상을 피해서 배치합니다.");
-  } catch (e) {
-    toast(e.message, true);
+function confirmSeats() {
+  const seated = state.desks.flat().slice().sort();
+  const current = state.students.map((s) => s.name.trim()).filter(Boolean).sort();
+  if (seated.join("\u0000") !== current.join("\u0000")) {
+    toast("배치 이후 학생 명단이 바뀌었어요. 자리를 다시 바꿔주세요.", true);
+    return;
   }
+  state.history.push(makeRecord(state.desks));
+  state.confirmed = true;
+  saveStore();
+  renderResult();
+  renderHistory();
+  toast("저장했어요. 다음에는 이번 짝꿍과 책상을 피해서 배치합니다.");
 }
 
 document.querySelectorAll('input[name="cols"]').forEach((r) => r.addEventListener("change", renderResult));
@@ -696,11 +999,10 @@ document.querySelectorAll('input[name="cols"]').forEach((r) => r.addEventListene
 /* ---------- 기록 ---------- */
 function renderHistory() {
   const box = $("history");
-  const reset = $("resetBtn");
-  reset.disabled = state.history.length === 0;
-  reset.replaceChildren(icon("trash", 15), "기록 초기화");
+  const empty = state.history.length === 0;
+  $("resetBtn").disabled = empty;
   renderSummary();
-  if (!state.history.length) {
+  if (empty) {
     box.replaceChildren(el("div", { class: "small muted", style: "padding: 8px 2px" },
       "아직 저장된 기록이 없어요. 자리를 확정하면 여기에 쌓입니다."));
     return;
@@ -721,28 +1023,69 @@ function renderHistory() {
   }).reverse()));
 }
 
-$("resetBtn").addEventListener("click", async () => {
+$("resetBtn").replaceChildren(icon("trash", 14), "초기화");
+$("resetBtn").addEventListener("click", () => {
   if (!confirm("지금까지의 짝꿍·자리 기록을 모두 지울까요? 되돌릴 수 없습니다.")) return;
+  state.history = [];
+  saveStore();
+  renderHistory();
+  toast("기록을 초기화했어요.");
+});
+
+/* ---------- 백업 / 복원 ---------- */
+$("backupBtn").replaceChildren(icon("download", 14), "백업");
+$("backupBtn").addEventListener("click", () => {
+  const data = { app: "changedesk", version: 1, students: state.students, history: state.history, genderMode: genderMode() };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = el("a", { href: URL.createObjectURL(blob), download: `자리바꾸기_백업_${makeRecord([]).date.slice(0, 10)}.json` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast("백업 파일을 저장했어요.");
+});
+
+function isValidHistory(h) {
+  return Array.isArray(h) && h.every((r) => r && Array.isArray(r.pairs) && r.pairs.every((p) => Array.isArray(p) && p.length === 2));
+}
+
+$("restoreBtn").replaceChildren(icon("upload", 14), "복원");
+$("restoreBtn").addEventListener("click", () => $("restoreFile").click());
+$("restoreFile").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
   try {
-    state.history = (await api("DELETE", "/api/history")).history;
+    const data = JSON.parse(await file.text());
+    // 백업 파일({students, history}) 또는 예전 파이썬 버전의 history.json(배열)을 받는다
+    const history = Array.isArray(data) ? data : data.history;
+    if (!isValidHistory(history)) throw new Error();
+    const students = Array.isArray(data) ? null : parseStudents(data.students || [], false);
+    if (!confirm(`${file.name}에서 ${students ? "명단과 " : ""}기록 ${history.length}회를 불러올까요? 지금 내용은 바뀝니다.`)) return;
+    state.history = history;
+    if (students) state.students = [...students].map(([name, s]) => ({ name, gender: s.gender, score: s.score }));
+    const mode = !Array.isArray(data) && data.genderMode;
+    if (mode) document.querySelector(`input[name="gender"][value="${mode}"]`)?.click();
+    state.desks = null;
+    saveStore();
+    renderRoster();
     renderHistory();
-    toast("기록을 초기화했어요.");
-  } catch (e) {
-    toast(e.message, true);
+    toast("복원했어요.");
+  } catch (err) {
+    toast(err instanceof StudentError ? err.message : "백업 파일 형식이 올바르지 않아요.", true);
   }
 });
 
 /* ---------- 시작 ---------- */
-(async function init() {
+(function init() {
   setArrangeButton(false);
-  try {
-    const data = await api("GET", "/api/state");
-    state.students = data.students;
-    state.history = data.history;
-    state.max = data.max_students;
-    document.querySelector(`input[name="gender"][value="${data.gender_mode}"]`).checked = true;
-  } catch (e) {
-    toast("서버에 연결할 수 없어요. python web.py 가 실행 중인지 확인해주세요.", true);
+  const saved = loadStore();
+  if (saved) {
+    state.students = Array.isArray(saved.students) ? saved.students : [];
+    state.history = isValidHistory(saved.history) ? saved.history : [];
+    if (saved.genderMode) document.querySelector(`input[name="gender"][value="${saved.genderMode}"]`)?.click();
+  } else {
+    state.students = SAMPLE.map((s) => ({ ...s }));
   }
   renderRoster();
   renderHistory();
