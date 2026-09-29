@@ -114,7 +114,7 @@
     max-width: 1240px; margin: 0 auto; padding: 20px 24px 64px;
     display: grid; grid-template-columns: 372px minmax(0, 1fr); gap: 24px; align-items: start;
   }
-  aside { position: sticky; top: 20px; }
+  aside { position: static; }
   @media (max-width: 960px) {
     .layout { grid-template-columns: 1fr; }
     aside { position: static; }
@@ -231,8 +231,8 @@
   .empty svg { color: var(--line-strong); margin-bottom: 18px; }
   .empty strong { display: block; color: var(--ink); font-size: 16px; font-weight: 650; margin-bottom: 4px; }
 
-  .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-  @media (max-width: 720px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  @media (max-width: 520px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   .tile { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--surface); }
   .tile-label { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
   .tile-label::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
@@ -370,6 +370,29 @@
   .footnote { max-width: 1240px; margin: -40px auto 0; padding: 0 24px 40px; color: var(--muted); font-size: 12.5px; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   @media print { .footnote { display: none; } }
+
+  /* ---------- 짝 금지 ---------- */
+  .hint { font-weight: 400; margin-left: 4px; }
+  .ban-form { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+  .ban-form select {
+    width: 100%; min-width: 0; height: 32px; padding: 0 8px; border-radius: 8px;
+    border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); font: inherit; font-size: 13.5px;
+  }
+  .ban-form select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .ban-x { color: var(--muted); font-size: 12px; }
+  .ban-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .ban-list:empty { display: none; }
+  .ban-chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border-radius: 999px;
+    background: var(--warn-soft); color: var(--ink-2); font-size: 13px; font-weight: 550;
+  }
+  .ban-chip .sep { color: var(--warn); font-size: 11px; }
+  .ban-chip button {
+    width: 22px; height: 22px; border: 0; border-radius: 50%; background: transparent; color: var(--muted);
+    display: grid; place-items: center;
+  }
+  .ban-chip button:hover { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--danger); }
+  .ban-chip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 </style>
 </head>
 <body>
@@ -384,7 +407,7 @@
     </div>
     <div>
       <h1>자리 바꾸기</h1>
-      <p>성적 균형 · 짝꿍 중복 · 성별 · 연속 같은 책상까지 고려해요</p>
+      <p>성적 균형 · 짝꿍 중복 · 성별 · 연속 같은 책상 · 짝 금지까지 고려해요</p>
     </div>
   </div>
   <div class="summary" id="summary"></div>
@@ -408,6 +431,19 @@
           <button class="btn sm" id="sampleBtn">예시 명단</button>
         </div>
         <input type="file" id="csvFile" accept=".csv,text/csv" class="sr-only" tabindex="-1" aria-hidden="true">
+
+        <div class="divider"></div>
+
+        <div class="field">
+          <span class="field-label">짝 금지 <span class="hint">서로 짝이 되면 안 되는 학생</span></span>
+          <div class="ban-form">
+            <select id="banA" aria-label="첫 번째 학생"></select>
+            <span class="ban-x" aria-hidden="true">✕</span>
+            <select id="banB" aria-label="두 번째 학생"></select>
+            <button class="btn sm" id="banAdd" type="button">추가</button>
+          </div>
+          <div class="ban-list" id="banList"></div>
+        </div>
 
         <div class="divider"></div>
 
@@ -476,6 +512,7 @@
    배치 알고리즘
    ============================================================ */
 const MAX_STUDENTS = 20;
+const BANNED_PAIR_PENALTY = 1e6; // 짝 금지로 설정한 두 학생이 짝이 되는 경우 (가장 우선)
 const PAST_PAIR_PENALTY = 1000;  // 예전 짝과 다시 짝이 되는 경우 (1회당)
 const SOLO_REPEAT_PENALTY = 500; // 혼자 앉았던 학생이 또 혼자 앉는 경우
 const GENDER_PENALTY = 300;      // 성별 배치 방식에 맞지 않는 짝
@@ -532,9 +569,11 @@ function isGenderMismatch(g1, g2, mode) {
 }
 
 class Arranger {
-  constructor(students, history, genderMode) {
+  constructor(students, history, genderMode, bannedPairs = []) {
     this.students = students;
     this.mode = genderMode === "none" ? null : genderMode;
+    this.banned = new Set(bannedPairs.filter(([a, b]) => students.has(a) && students.has(b))
+      .map(([a, b]) => pairKey(a, b)));
     this.pairCount = new Map();
     this.soloCount = new Map();
     for (const rec of history) {
@@ -553,8 +592,13 @@ class Arranger {
     return isGenderMismatch(this.students.get(a).gender, this.students.get(b).gender, this.mode);
   }
 
+  isBanned(a, b) {
+    return this.banned.has(pairKey(a, b));
+  }
+
   pairCost(a, b) {
     let cost = PAST_PAIR_PENALTY * (this.pairCount.get(pairKey(a, b)) || 0);
+    if (this.isBanned(a, b)) cost += BANNED_PAIR_PENALTY;
     if (this.genderMismatch(a, b)) cost += GENDER_PENALTY;
     cost += GRADE_WEIGHT * Math.abs(this.students.get(a).score + this.students.get(b).score - this.targetSum);
     return cost;
@@ -622,9 +666,13 @@ class Arranger {
       const groups = [];
       for (let i = 0; i < order.length; i += 2) groups.push(order.slice(i, i + 2));
       const key = groups.map((g) => g.slice().sort().join("\u0000")).sort().join("\u0001");
-      if (!candidates.has(key)) candidates.set(key, { cost, groups });
+      const banned = groups.filter((g) => g.length === 2 && this.isBanned(...g)).length;
+      if (!candidates.has(key)) candidates.set(key, { cost, groups, banned });
     }
-    const ranked = [...candidates.values()].sort((a, b) => a.cost - b.cost).map((c) => c.groups);
+    // 짝 금지를 가장 적게 어기는 조합만 남긴다 (책상 조건 때문에 짝 금지를 어기는 일이 없도록)
+    const fewestBanned = Math.min(...[...candidates.values()].map((c) => c.banned));
+    const ranked = [...candidates.values()].filter((c) => c.banned === fewestBanned)
+      .sort((a, b) => a.cost - b.cost).map((c) => c.groups);
 
     for (let maxConflicts = 0; maxConflicts <= names.length; maxConflicts++) {
       for (const groups of ranked) {
@@ -639,6 +687,8 @@ class Arranger {
     const pairs = desks.filter((g) => g.length === 2);
     const sums = pairs.map(([a, b]) => this.students.get(a).score + this.students.get(b).score);
     return {
+      banned_count: this.banned.size,
+      banned: pairs.filter(([a, b]) => this.isBanned(a, b)),
       repeats: pairs.filter(([a, b]) => this.pairCount.get(pairKey(a, b)))
         .map(([a, b]) => ({ pair: [a, b], count: this.pairCount.get(pairKey(a, b)) })),
       same_desk: desks.flatMap((g, i) => g.filter((n) => this.lastDesk[n] === i + 1)),
@@ -683,7 +733,7 @@ function loadStore() {
 function saveStore() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify({
-      students: state.students, history: state.history, genderMode: genderMode(),
+      students: state.students, history: state.history, genderMode: genderMode(), bans: state.bans,
     }));
   } catch {
     if (!storageWarned) {
@@ -703,7 +753,7 @@ const SAMPLE = [
 /* ============================================================
    화면
    ============================================================ */
-const state = { students: [], history: [], desks: null, report: null, confirmed: false };
+const state = { students: [], history: [], bans: [], desks: null, report: null, confirmed: false };
 const $ = (id) => document.getElementById(id);
 const GCLASS = { "남": "m", "여": "f" };
 
@@ -771,7 +821,52 @@ function renderSummary() {
 function rosterChanged() {
   saveStore();
   renderSummary();
+  renderBans();
 }
+
+/* ---------- 짝 금지 ---------- */
+const rosterNames = () => [...new Set(state.students.map((s) => s.name.trim()).filter(Boolean))];
+
+/** 명단에 없는 학생이 들어 있는 짝 금지 항목을 지운다. */
+function pruneBans() {
+  const names = new Set(rosterNames());
+  state.bans = state.bans.filter(([a, b]) => names.has(a) && names.has(b));
+}
+
+/** 학생 이름을 고치면 짝 금지 항목의 이름도 같이 바꾼다. */
+function renameInBans(oldName, newName) {
+  if (!oldName || oldName === newName) return;
+  if (state.students.some((s) => s.name.trim() === oldName)) return; // 같은 이름이 아직 남아 있음
+  state.bans = state.bans.map((pair) => pair.map((n) => (n === oldName ? newName : n)));
+}
+
+function renderBans() {
+  const names = rosterNames();
+  for (const id of ["banA", "banB"]) {
+    const sel = $(id);
+    const prev = sel.value;
+    sel.replaceChildren(el("option", { value: "" }, "학생 선택"), ...names.map((n) => el("option", { value: n }, n)));
+    sel.value = names.includes(prev) ? prev : "";
+  }
+  $("banAdd").disabled = names.length < 2;
+  $("banList").replaceChildren(...state.bans.map(([a, b], i) =>
+    el("span", { class: "ban-chip" }, a, el("span", { class: "sep", "aria-hidden": "true" }, "✕"), b,
+      el("button", { type: "button", title: "삭제", "aria-label": `${a}, ${b} 짝 금지 해제`,
+        onclick: () => { state.bans.splice(i, 1); renderBans(); saveStore(); } }, icon("x", 12)))));
+}
+
+$("banAdd").addEventListener("click", () => {
+  const a = $("banA").value, b = $("banB").value;
+  if (!a || !b) return toast("짝 금지할 학생 두 명을 골라주세요.", true);
+  if (a === b) return toast("서로 다른 학생을 골라주세요.", true);
+  if (state.bans.some((p) => pairKey(...p) === pairKey(a, b))) return toast("이미 추가된 조합이에요.", true);
+  state.bans.push([a, b]);
+  $("banA").value = "";
+  $("banB").value = "";
+  renderBans();
+  saveStore();
+  toast(`${a} · ${b} 학생은 짝이 되지 않도록 배치할게요.`);
+});
 
 function renderRoster() {
   const roster = $("roster");
@@ -791,13 +886,20 @@ function renderRoster() {
       return el("div", { class: "row" },
         av,
         el("input", { value: s.name, placeholder: "이름", "aria-label": "이름",
-          oninput: (e) => { s.name = e.target.value; av.textContent = initial(s.name); rosterChanged(); } }),
+          oninput: (e) => {
+            const oldName = s.name.trim();
+            s.name = e.target.value;
+            renameInBans(oldName, s.name.trim());
+            av.textContent = initial(s.name);
+            rosterChanged();
+          },
+          onchange: () => { pruneBans(); rosterChanged(); } }),
         el("div", { class: "gtoggle", role: "group", "aria-label": "성별" }, genderBtns),
         el("input", { class: "score", type: "number", min: 0, step: "any", inputmode: "decimal",
           value: s.score ?? "", placeholder: "점수", "aria-label": "성적",
           oninput: (e) => { s.score = e.target.value; rosterChanged(); } }),
         el("button", { class: "icon-btn", type: "button", title: "삭제", "aria-label": `${s.name || "학생"} 삭제`,
-          onclick: () => { state.students.splice(i, 1); renderRoster(); saveStore(); } }, icon("x", 15)),
+          onclick: () => { state.students.splice(i, 1); pruneBans(); renderRoster(); saveStore(); } }, icon("x", 15)),
       );
     }));
   }
@@ -808,6 +910,7 @@ function renderRoster() {
   add.disabled = n >= MAX_STUDENTS;
   add.replaceChildren(icon("plus", 15), n >= MAX_STUDENTS ? `최대 ${MAX_STUDENTS}명까지 가능해요` : "학생 추가");
   renderSummary();
+  renderBans();
 }
 
 $("addBtn").addEventListener("click", () => {
@@ -822,6 +925,7 @@ $("addBtn").addEventListener("click", () => {
 function replaceRoster(rows, what) {
   if (state.students.some((s) => s.name.trim()) && !confirm(`지금 명단을 ${what}(으)로 바꿀까요?`)) return false;
   state.students = rows;
+  pruneBans();
   renderRoster();
   saveStore();
   return true;
@@ -879,7 +983,7 @@ async function arrange() {
   try {
     const rows = state.students.filter((s) => s.name.trim());
     const students = parseStudents(rows);
-    const arranger = new Arranger(students, state.history, genderMode());
+    const arranger = new Arranger(students, state.history, genderMode(), state.bans);
     state.desks = arranger.arrange();
     state.report = arranger.report(state.desks);
     state.confirmed = false;
@@ -910,10 +1014,15 @@ function renderResult() {
   const byName = Object.fromEntries(state.students.map((s) => [s.name, s]));
   const repeatSet = new Set(report.repeats.map((r) => pairKey(...r.pair)));
   const mismatchSet = new Set(report.gender_mismatches.map((p) => pairKey(...p)));
+  const bannedSet = new Set(report.banned.map((p) => pairKey(...p)));
   const sameDesk = new Set(report.same_desk);
 
   const spread = report.score_max - report.score_min;
   const tiles = el("div", { class: "tiles" },
+    report.banned_count
+      ? tile(report.banned.length ? "warn" : "ok", "짝 금지", report.banned.length ? `${report.banned.length}쌍 어김` : "모두 지킴",
+          report.banned.length ? "조합상 불가피" : `${report.banned_count}쌍 설정됨`)
+      : null,
     tile(report.repeats.length ? "warn" : "ok", "예전 짝 중복", `${report.repeats.length}쌍`,
       report.repeats.length ? "조합이 부족해 불가피" : "모두 새로운 짝"),
     report.has_last_desk
@@ -929,6 +1038,8 @@ function renderResult() {
   );
 
   const notes = [];
+  if (report.banned.length) notes.push("짝 금지 조합을 피할 수 없었어요: " +
+    report.banned.map(([a, b]) => `${a} & ${b}`).join(", "));
   if (report.repeats.length) notes.push("예전 짝과 다시 짝: " +
     report.repeats.map((r) => `${r.pair[0]} & ${r.pair[1]} (${r.count}회)`).join(", "));
   if (report.same_desk.length) notes.push("지난번과 같은 책상: " + report.same_desk.join(", "));
@@ -950,6 +1061,7 @@ function renderResult() {
   const grid = el("div", { class: "desks", style: `grid-template-columns: repeat(${columns()}, minmax(0, 1fr))` },
     desks.map((g, i) => {
       const flags = [];
+      if (g.length === 2 && bannedSet.has(pairKey(...g))) flags.push("짝 금지");
       if (g.length === 2 && repeatSet.has(pairKey(...g))) flags.push("예전 짝");
       if (g.length === 2 && mismatchSet.has(pairKey(...g))) flags.push("성별");
       return el("div", { class: "desk" + (flags.length ? " flag" : ""), style: `--i:${i}` },
@@ -1035,7 +1147,8 @@ $("resetBtn").addEventListener("click", () => {
 /* ---------- 백업 / 복원 ---------- */
 $("backupBtn").replaceChildren(icon("download", 14), "백업");
 $("backupBtn").addEventListener("click", () => {
-  const data = { app: "changedesk", version: 1, students: state.students, history: state.history, genderMode: genderMode() };
+  const data = { app: "changedesk", version: 1, students: state.students, history: state.history,
+                 genderMode: genderMode(), bans: state.bans };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
   const a = el("a", { href: URL.createObjectURL(blob), download: `자리바꾸기_백업_${makeRecord([]).date.slice(0, 10)}.json` });
   document.body.append(a);
@@ -1047,6 +1160,12 @@ $("backupBtn").addEventListener("click", () => {
 
 function isValidHistory(h) {
   return Array.isArray(h) && h.every((r) => r && Array.isArray(r.pairs) && r.pairs.every((p) => Array.isArray(p) && p.length === 2));
+}
+
+/** 저장된 짝 금지 목록에서 올바른 [이름, 이름] 항목만 남긴다. */
+function validBans(bans) {
+  if (!Array.isArray(bans)) return [];
+  return bans.filter((p) => Array.isArray(p) && p.length === 2 && p.every((n) => typeof n === "string" && n) && p[0] !== p[1]);
 }
 
 $("restoreBtn").replaceChildren(icon("upload", 14), "복원");
@@ -1064,6 +1183,8 @@ $("restoreFile").addEventListener("change", async (e) => {
     if (!confirm(`${file.name}에서 ${students ? "명단과 " : ""}기록 ${history.length}회를 불러올까요? 지금 내용은 바뀝니다.`)) return;
     state.history = history;
     if (students) state.students = [...students].map(([name, s]) => ({ name, gender: s.gender, score: s.score }));
+    if (students) state.bans = validBans(data.bans);
+    pruneBans();
     const mode = !Array.isArray(data) && data.genderMode;
     if (mode) document.querySelector(`input[name="gender"][value="${mode}"]`)?.click();
     state.desks = null;
@@ -1083,6 +1204,7 @@ $("restoreFile").addEventListener("change", async (e) => {
   if (saved) {
     state.students = Array.isArray(saved.students) ? saved.students : [];
     state.history = isValidHistory(saved.history) ? saved.history : [];
+    state.bans = validBans(saved.bans);
     if (saved.genderMode) document.querySelector(`input[name="gender"][value="${saved.genderMode}"]`)?.click();
   } else {
     state.students = SAMPLE.map((s) => ({ ...s }));
