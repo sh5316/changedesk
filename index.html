@@ -457,6 +457,38 @@
   .seat .meta .lv { color: var(--ink-2); font-weight: 600; }
   a.btn { text-decoration: none; color: var(--ink); }
   a.btn.primary { color: var(--accent-ink); }
+
+  /* ---------- 자리 배치 화면 (이름만) ---------- */
+  .layout.single { grid-template-columns: minmax(0, 1fr); }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 16px 20px 0; }
+  .toolbar h2 { margin: 0; font-size: 15px; font-weight: 650; }
+  .toolbar .spacer { flex: 1; }
+  .cols-pick { display: flex; align-items: center; gap: 8px; }
+  .cols-pick .seg label { padding: 6px 12px; }
+  #rosterProblem .alert-box { margin: 14px 20px 0; }
+  #rosterProblem a { color: var(--accent); font-weight: 600; }
+  #screen-seats .seat { padding: 14px 6px 12px; gap: 4px; }
+  #screen-seats .seat .avatar { width: 40px; height: 40px; font-size: 16px; }
+  #screen-seats .seat .name { font-size: 17px; }
+  @media (max-width: 640px) {
+    .toolbar .spacer { display: none; }
+    .toolbar h2 { flex: 1; }
+    .cols-pick { width: 100%; }
+    .cols-pick .seg { flex: 1; }
+    .toolbar .btn { flex: 1; white-space: nowrap; padding: 0 10px; }
+    .toolbar #arrangeBtn { flex-basis: 100%; height: 46px; }
+    #screen-seats .seat .name { font-size: 15px; }
+  }
+  @media print { .toolbar, #rosterProblem { display: none !important; } }
+
+  #rosterNotice { padding: 0 20px; }
+  #rosterNotice .alert-box b { font-weight: 600; }
+  .row.incomplete { background: var(--warn-soft); }
+  .row.incomplete:hover, .row.incomplete:focus-within { background: color-mix(in srgb, var(--warn-soft) 70%, var(--surface-2)); }
+
+  .check-head { display: flex; justify-content: space-between; align-items: baseline; margin: 18px 0 10px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .check-head b { font-size: 14px; font-weight: 650; }
+  #checkBox .tiles { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 </style>
 </head>
 <body>
@@ -471,7 +503,7 @@
     </div>
     <div>
       <h1>자리 바꾸기</h1>
-      <p>성적 균형 · 짝꿍 중복 · 성별 · 연속 같은 책상 · 짝 금지까지 고려해요</p>
+      <p>우리 반 새 자리를 정해요</p>
     </div>
   </div>
   <nav class="nav" aria-label="화면">
@@ -491,6 +523,7 @@
       </div>
     </div>
     <div class="stats" id="rosterStats"></div>
+    <div id="rosterNotice"></div>
     <div class="card-body">
       <div class="row head" aria-hidden="true">
         <span></span><span class="left">이름</span><span>성별</span><span>성적</span><span></span>
@@ -508,6 +541,22 @@
   </section>
 
   <div class="stack">
+    <section class="card">
+      <div class="card-head"><h2>배치 조건</h2><span class="small muted">자리 배치 화면에는 보이지 않아요</span></div>
+      <div class="card-body">
+        <div class="field">
+          <span class="field-label">성별 배치</span>
+          <div class="seg">
+            <label><input type="radio" name="gender" value="mixed" checked>남녀 짝</label>
+            <label><input type="radio" name="gender" value="same">같은 성별</label>
+            <label><input type="radio" name="gender" value="none">고려 안 함</label>
+          </div>
+        </div>
+        <p class="desc" style="margin: 12px 0 0">짝 금지 · 예전 짝 피하기 · 연속 같은 책상 피하기 · 성적(상+하, 중+중)은 자동으로 고려돼요.</p>
+        <div id="checkBox"></div>
+      </div>
+    </section>
+
     <section class="card">
       <div class="card-head"><h2>짝 금지</h2><span class="small muted">서로 짝이 되면 안 되는 학생</span></div>
       <div class="card-body">
@@ -544,48 +593,28 @@
 </div>
 
 <!-- ============ 2. 자리 배치 ============ -->
-<div class="layout" id="screen-seats" hidden>
-  <aside>
-    <section class="card">
-      <div class="card-head"><h2>배치 조건</h2></div>
-      <div class="card-body">
-        <ul class="conds" id="conds"></ul>
-        <div id="rosterProblem"></div>
-        <a class="btn sm edit-link" href="#students">학생 정보 수정하기</a>
-
-        <div class="divider"></div>
-
-        <div class="field">
-          <span class="field-label">성별 배치</span>
-          <div class="seg">
-            <label><input type="radio" name="gender" value="mixed" checked>남녀 짝</label>
-            <label><input type="radio" name="gender" value="same">같은 성별</label>
-            <label><input type="radio" name="gender" value="none">고려 안 함</label>
-          </div>
+<!-- 학생들에게 보여주는 화면: 성적·성별·조건은 표시하지 않고 이름만 보여준다 -->
+<div class="layout single" id="screen-seats" hidden>
+  <section class="card" id="resultCard">
+    <div class="toolbar">
+      <h2>새 자리</h2>
+      <span class="badge" id="status" hidden></span>
+      <span class="spacer"></span>
+      <div class="cols-pick">
+        <span class="small muted">한 줄 책상</span>
+        <div class="seg">
+          <label><input type="radio" name="cols" value="2" checked>2개</label>
+          <label><input type="radio" name="cols" value="3">3개</label>
+          <label><input type="radio" name="cols" value="4">4개</label>
         </div>
-        <div class="field">
-          <span class="field-label">한 줄 책상 수</span>
-          <div class="seg">
-            <label><input type="radio" name="cols" value="2" checked>2개</label>
-            <label><input type="radio" name="cols" value="3">3개</label>
-            <label><input type="radio" name="cols" value="4">4개</label>
-          </div>
-        </div>
-
-        <button class="btn primary cta" id="arrangeBtn"></button>
       </div>
-    </section>
-  </aside>
-
-  <main>
-    <section class="card" id="resultCard">
-      <div class="card-head">
-        <h2>새 자리</h2>
-        <span class="badge" id="status" hidden></span>
-      </div>
-      <div class="card-body" id="result"></div>
-    </section>
-  </main>
+      <button class="btn" id="printBtn"></button>
+      <button class="btn" id="confirmBtn"></button>
+      <button class="btn primary" id="arrangeBtn"></button>
+    </div>
+    <div id="rosterProblem"></div>
+    <div class="card-body" id="result"></div>
+  </section>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -931,6 +960,12 @@ function toast(msg, isError = false) {
 const initial = (name) => (name || "").trim().charAt(0) || "?";
 const avatar = (s) => el("div", { class: "avatar " + (GCLASS[s.gender] || ""), "aria-hidden": "true" }, initial(s.name));
 const namedStudents = () => state.students.filter((s) => s.name.trim());
+/** 이름·성별·성적이 모두 입력된 학생만 자리에 앉는다. */
+const isComplete = (s) => !!(s.name.trim() && s.gender && s.grade);
+const seatedStudents = () => state.students.filter(isComplete);
+function missingFields(s) {
+  return [!s.gender && "성별", !s.grade && "성적"].filter(Boolean).join("·");
+}
 const countBy = (list, key, value) => list.filter((s) => s[key] === value).length;
 
 function download(filename, text) {
@@ -948,7 +983,10 @@ function showScreen(name) {
   for (const s of SCREENS) $(`screen-${s}`).hidden = s !== name;
   document.querySelectorAll(".nav a").forEach((a) =>
     a.setAttribute("aria-current", a.dataset.screen === name ? "page" : "false"));
-  if (name === "seats") renderConditions();
+  if (name === "seats") {
+    renderConditions();
+    renderResult();
+  }
   window.scrollTo(0, 0);
 }
 
@@ -957,15 +995,14 @@ window.addEventListener("hashchange", () => {
   if (SCREENS.includes(name)) showScreen(name);
 });
 
-/** 명단이나 짝 금지가 바뀌면 저장하고, 아직 확정하지 않은 배치 결과는 지운다. */
+/** 명단이나 짝 금지가 바뀌면 저장하고, 배치 결과는 지우고 입력된 명단을 다시 보여준다. */
 function dataChanged() {
   saveStore();
-  if (state.desks) {
-    state.desks = null;
-    renderResult();
-  }
+  state.desks = null;
+  renderResult();
   renderRosterMeta();
   renderBans();
+  renderConditions();
 }
 
 /* ============================================================
@@ -986,6 +1023,16 @@ function renderRosterMeta() {
   add.disabled = n >= MAX_STUDENTS;
   add.replaceChildren(icon("plus", 15), n >= MAX_STUDENTS ? `최대 ${MAX_STUDENTS}명까지 가능해요` : "학생 추가");
   $("clearBtn").disabled = n === 0;
+
+  const missing = list.filter((s) => !isComplete(s));
+  let problem = null;
+  try { parseStudents(seatedStudents()); } catch (e) { problem = e.message; }
+  $("rosterNotice").replaceChildren(...[
+    missing.length ? el("div", { class: "alert-box" }, icon("alert", 14), el("span", {},
+      "정보가 모두 입력되지 않아 자리 배치에서 빠지는 학생: ",
+      el("b", {}, missing.map((s) => `${s.name.trim()}(${missingFields(s)} 미입력)`).join(", ")))) : null,
+    problem ? el("div", { class: "alert-box" }, icon("alert", 14), problem) : null,
+  ].filter(Boolean));
 }
 
 function toggle(options, current, onPick, cls, label) {
@@ -1006,7 +1053,8 @@ function renderRoster() {
   } else {
     roster.replaceChildren(...state.students.map((s, i) => {
       const av = avatar(s);
-      return el("div", { class: "row" },
+      const row = el("div", { class: "row" + (s.name.trim() && !isComplete(s) ? " incomplete" : ""),
+                              title: s.name.trim() && !isComplete(s) ? `${missingFields(s)}을(를) 입력해야 자리에 앉아요` : null },
         av,
         el("input", { value: s.name, placeholder: "이름", "aria-label": "이름",
           oninput: (e) => {
@@ -1014,6 +1062,7 @@ function renderRoster() {
             s.name = e.target.value;
             renameInBans(oldName, s.name.trim());
             av.textContent = initial(s.name);
+            row.classList.toggle("incomplete", !!s.name.trim() && !isComplete(s));
             dataChanged();
           },
           onchange: () => { pruneBans(); dataChanged(); } }),
@@ -1022,6 +1071,7 @@ function renderRoster() {
         el("button", { class: "icon-btn", type: "button", title: "삭제", "aria-label": `${s.name || "학생"} 삭제`,
           onclick: () => { state.students.splice(i, 1); pruneBans(); renderRoster(); dataChanged(); } }, icon("x", 15)),
       );
+      return row;
     }));
   }
   renderRosterMeta();
@@ -1236,24 +1286,21 @@ document.querySelectorAll('input[name="cols"]').forEach((r) => r.addEventListene
   renderResult();
 }));
 
-/** 왼쪽 '배치 조건' 요약과 명단 문제 안내 */
+/** 명단에 문제가 있으면 자리 배치 화면에 안내하고 '자리 바꾸기'를 막는다. */
 function renderConditions() {
-  const list = namedStudents();
-  const item = (label, ...value) => el("li", {}, el("span", {}, label), el("b", {}, ...value));
-  $("conds").replaceChildren(
-    item("학생", `${list.length}명`, el("span", { class: "muted small" },
-      ` (남 ${countBy(list, "gender", "남")} · 여 ${countBy(list, "gender", "여")})`)),
-    item("성적", GRADES.map((g) => `${g} ${countBy(list, "grade", g)}`).join(" · ")),
-    item("짝 금지", `${state.bans.length}쌍`),
-    item("지난 기록", `${state.history.length}회`),
-  );
   let problem = null;
-  try { parseStudents(list); } catch (e) { problem = e.message; }
+  try { parseStudents(seatedStudents()); } catch (e) { problem = e.message; }
+  // 학생들이 보는 화면이므로 자세한 내용(성적 등)은 학생 정보 화면에서만 안내한다
   $("rosterProblem").replaceChildren(problem
-    ? el("div", { class: "alert-box" }, icon("alert", 14), `명단을 확인해주세요: ${problem}`)
+    ? el("div", { class: "alert-box" }, icon("alert", 14),
+        el("span", {}, "자리를 배치하려면 학생 정보를 먼저 확인해주세요. ", el("a", { href: "#students" }, "학생 정보로 가기")))
     : "");
   $("arrangeBtn").disabled = !!problem;
 }
+
+$("printBtn").replaceChildren(icon("printer"), "인쇄");
+$("printBtn").addEventListener("click", () => window.print());
+$("confirmBtn").addEventListener("click", () => confirmSeats());
 
 function setArrangeButton(busy) {
   const btn = $("arrangeBtn");
@@ -1266,7 +1313,7 @@ async function arrange() {
   $("result").classList.add("busy");
   await new Promise((r) => setTimeout(r, 40)); // 버튼 상태가 먼저 그려지도록
   try {
-    const students = parseStudents(namedStudents());
+    const students = parseStudents(seatedStudents());
     const arranger = new Arranger(students, state.history, genderMode(), state.bans);
     state.desks = arranger.arrange();
     state.report = arranger.report(state.desks);
@@ -1298,19 +1345,47 @@ function renderEmptyResult() {
     + '<rect x="50" y="46" width="34" height="14" rx="4"/></svg>';
   $("result").replaceChildren(el("div", { class: "empty" },
     art.firstChild,
-    el("strong", {}, "아직 새 자리가 없어요"),
-    el("span", { class: "small" }, "배치 조건을 확인하고 ", el("b", {}, "자리 바꾸기"), "를 눌러주세요.")));
+    el("strong", {}, "아직 입력된 학생이 없어요"),
+    el("span", { class: "small" }, "학생 정보 화면에서 학생을 입력해주세요.")));
   $("status").hidden = true;
 }
 
+/** 자리 배치 화면: 칠판과 책상, 학생 이름만 보여준다. */
 function renderResult() {
+  const { desks } = state;
+  $("confirmBtn").disabled = !desks || state.confirmed;
+  $("confirmBtn").replaceChildren(icon("check"), state.confirmed ? "확정됨" : "이 자리로 확정");
+  $("printBtn").disabled = !desks;
+  renderCheck();
+
+  // 아직 자리를 바꾸기 전: 학생 정보에 입력된 학생을 명단 순서대로 보여준다
+  const names = seatedStudents().map((s) => s.name.trim());
+  const shown = desks ?? Array.from({ length: Math.ceil(names.length / 2) }, (_, i) => names.slice(i * 2, i * 2 + 2));
+  if (!shown.length) return renderEmptyResult();
+
+  const seat = (name) => el("div", { class: "seat" },
+    el("div", { class: "avatar", "aria-hidden": "true" }, initial(name)),
+    el("div", { class: "name" }, name));
+
+  const grid = el("div", { class: "desks", style: `grid-template-columns: repeat(${columns()}, minmax(0, 1fr))` },
+    shown.map((g, i) => el("div", { class: "desk", style: `--i:${i}` },
+      el("div", { class: "desk-head" }, el("span", { class: "desk-no" }, `${i + 1}번 책상`)),
+      el("div", { class: "desk-seats" },
+        g.map(seat),
+        g.length === 1 ? el("div", { class: "seat vacant" }, "빈자리") : null))));
+
+  $("result").replaceChildren(el("div", { class: "classroom" }, el("div", { class: "board" }, "칠판"), grid));
+
+  const status = $("status");
+  status.hidden = false;
+  status.className = "badge " + (!desks ? "" : state.confirmed ? "done" : "pending");
+  status.textContent = !desks ? `배치 전 · ${names.length}명` : state.confirmed ? `${state.history.length}회차로 저장됨` : "확정 전";
+}
+
+/** 학생 정보 화면의 '배치 조건' 카드: 지금 배치가 조건을 지켰는지 선생님만 확인한다. */
+function renderCheck() {
   const { desks, report } = state;
-  if (!desks) return renderEmptyResult();
-  const byName = Object.fromEntries(state.students.map((s) => [s.name.trim(), s]));
-  const repeatSet = new Set(report.repeats.map((r) => pairKey(...r.pair)));
-  const mismatchSet = new Set(report.gender_mismatches.map((p) => pairKey(...p)));
-  const bannedSet = new Set(report.banned.map((p) => pairKey(...p)));
-  const sameDesk = new Set(report.same_desk);
+  if (!desks) return $("checkBox").replaceChildren();
 
   const tiles = el("div", { class: "tiles" },
     report.banned_count
@@ -1340,55 +1415,17 @@ function renderResult() {
   if (report.gender_rule && report.gender_mismatches.length) notes.push(`${report.gender_rule} 예외: ` +
     report.gender_mismatches.map(([a, b]) => `${a} & ${b}`).join(", "));
 
-  const seat = (name) => {
-    const s = byName[name];
-    const same = sameDesk.has(name);
-    return el("div", { class: "seat" + (same ? " same" : ""), title: same ? "지난번과 같은 책상" : null },
-      same ? el("span", { class: "seat-badge", "aria-label": "지난번과 같은 책상" }) : null,
-      avatar(s),
-      el("div", { class: "name" }, name),
-      el("div", { class: "meta" },
-        s.gender ? el("span", { class: GCLASS[s.gender] }, s.gender) : null,
-        s.gender ? " · " : null,
-        "성적 ", el("span", { class: "lv" }, s.grade)));
-  };
-
-  const grid = el("div", { class: "desks", style: `grid-template-columns: repeat(${columns()}, minmax(0, 1fr))` },
-    desks.map((g, i) => {
-      const flags = [];
-      if (g.length === 2 && bannedSet.has(pairKey(...g))) flags.push("짝 금지");
-      if (g.length === 2 && repeatSet.has(pairKey(...g))) flags.push("예전 짝");
-      if (g.length === 2 && mismatchSet.has(pairKey(...g))) flags.push("성별");
-      return el("div", { class: "desk" + (flags.length ? " flag" : ""), style: `--i:${i}` },
-        el("div", { class: "desk-head" },
-          el("span", { class: "desk-no" }, `${i + 1}번 책상`),
-          flags.length ? el("div", { class: "flags" }, flags.map((f) => el("span", { class: "flag-chip" }, f))) : null),
-        el("div", { class: "desk-seats" },
-          g.map(seat),
-          g.length === 1 ? el("div", { class: "seat vacant" }, "빈자리") : null));
-    }));
-
-  $("result").replaceChildren(...[
+  $("checkBox").replaceChildren(...[
+    el("div", { class: "check-head" }, el("b", {}, "지금 배치 점검"),
+      el("span", { class: "small muted" }, state.confirmed ? `${state.history.length}회차로 확정됨` : "확정 전")),
     tiles,
     notes.length ? el("ul", { class: "notes" }, notes.map((n) => el("li", {}, icon("alert", 14), n))) : null,
-    el("div", { class: "classroom" }, el("div", { class: "board" }, "칠판"), grid),
-    el("div", { class: "actions" },
-      el("button", { class: "btn", onclick: arrange, disabled: state.confirmed }, icon("refresh"), "다시 섞기"),
-      el("button", { class: "btn", onclick: () => window.print() }, icon("printer"), "인쇄"),
-      el("span", { class: "spacer" }),
-      el("button", { class: "btn primary", onclick: confirmSeats, disabled: state.confirmed },
-        icon("check"), state.confirmed ? "확정됨" : "이 자리로 확정")),
   ].filter(Boolean));
-
-  const status = $("status");
-  status.hidden = false;
-  status.className = "badge " + (state.confirmed ? "done" : "pending");
-  status.textContent = state.confirmed ? `${state.history.length}회차로 저장됨` : "확정 전";
 }
 
 function confirmSeats() {
   const seated = state.desks.flat().slice().sort();
-  const current = namedStudents().map((s) => s.name.trim()).sort();
+  const current = seatedStudents().map((s) => s.name.trim()).sort();
   if (seated.join("\u0000") !== current.join("\u0000")) {
     toast("배치 이후 학생 명단이 바뀌었어요. 자리를 다시 바꿔주세요.", true);
     return;
@@ -1428,7 +1465,7 @@ function confirmSeats() {
 
   const requested = location.hash.slice(1);
   let ready = true;
-  try { parseStudents(namedStudents()); } catch { ready = false; }
+  try { parseStudents(seatedStudents()); } catch { ready = false; }
   const start = SCREENS.includes(requested) ? requested : ready ? "seats" : "students";
   if (location.hash !== `#${start}`) history.replaceState(null, "", `#${start}`);
   showScreen(start);
